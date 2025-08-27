@@ -2,11 +2,16 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict
 import os
+import re
 from pathlib import Path
 import pdfplumber
 import PyPDF2
 import pytesseract
 import chromadb
+import fitz
+import hashlib
+from datetime import datetime
+from pix2text import Pix2Text
 
 class BaseAcademicProcessor:
     """
@@ -44,19 +49,115 @@ class BaseAcademicProcessor:
     
     # ===== CONCRETE METHODS (shared across all domains) =====
     
-    def extract_text_from_pdf(self, file_path: str) -> ExtractedText:
+    def extract_text_from_pdf(self, file_path: str) -> list[dict]:
         """Universal PDF text extraction with academic optimizations"""
-        # Use pdfplumber for tables/equations
-        # Fallback to PyPDF2
-        # Handle OCR for scanned documents
-        # Return structured text + basic metadata
+        
+        p2t = Pix2Text() #Initialise OCR for image processing
+
+        extracted_content = []
+
+        with pdfplumber.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                page_data = {
+                    "page" : page_num + 1,
+                    "text" : "",
+                    "tables" : [],
+                    "images" : [] 
+                }
+
+                text = page.extract_text()
+                if text:
+                    page_data["text"] = text
+
+                tables = page.extract_table()
+                if tables:
+                    page_data["tables"] = tables
+
+                extracted_content.append(page_data) # Add page to list - use enumerate to index later
+
+        with fitz.open(file_path) as doc:
+            for page_num, page in enumerate(doc):
+                images = page.get_images()
+
+                for img_index, img in enumerate(images):
+                    cross_ref = img[0]
+                    pixel_map = fitz.Pixmap(doc, cross_ref)
+
+                    if pixel_map.n - pixel_map.alpha > 3: #Convert CMYK images into RGB for consistency
+                        pixel_map = fitz.Pixmap(fitz.csRGB, pixel_map)
+
+                    img_data = pixel_map.tobytes("png") # Convert to png
+
+                    ocr_img = p2t.recognize(img_data)
+
+                    extracted_content[page_num]["images"].append({ # Add images their numers to each page's dictionary
+                        "index": img_index,
+                        "ocr_text": ocr_img})
+                    
+        return extracted_content    
+
     
-    def extract_base_metadata(self, text_content: List[Dict], file_path: str) -> BaseMetadata:
-        """Extract universal academic metadata"""
+    def extract_base_metadata(self, text_content: List[Dict], file_path: str) -> dict:
         # File hash, page count, processing date
         # Basic title extraction (first meaningful line)
         # Basic year extraction (regex patterns)
         # Document type detection (paper vs textbook heuristics)
+        
+        # File hash for duplication checking/tracking
+        with open(file_path, "rb") as f: # read binary data
+            file_bytes = f.read() # for hash
+            pdf2_reader = PyPDF2.PdfReader(f) # for metadata
+        file_hash = hashlib.sha256(file_bytes).hexdigest() # hash data and convert to str
+
+        metadata = pdf2_reader.metadata
+        
+        page_count = len(text_content)
+        
+        process_date = datetime.now().utctime().isoformat() # Use universal time (same as GMT)
+        
+        if metadata and "/Title" in metadata: # Try metadata
+            title_guess = metadata["/Title"]
+            if title_guess.type() == str:
+                title = title_guess # Only assign if title is correct type
+            
+        if not title: # fallback method - might work for papers probably need improving
+            first_page_text = text_content[0]["text"].splitlines() if text_content and text_content[0]["text"] else []
+            title_guess = ""
+            for line in first_page_text:
+                if line.strip() and len(line.strip()) > 5: 
+                    title_guess = line.strip()
+                    break
+            title = title_guess
+
+        if metadata and "/CreationDate" in metadata:
+            try:
+                creation_date = datetime(metadata["CreationDate"]).utctime().isoformat()
+            except TypeError:
+                pass
+
+        if not creation_date:# Year guess (regex over first 2 pages)
+            combined_text = " ".join([p["text"] for p in text_content[:2] if p["text"]])
+            year_match = re.search(r"(19|20)\d{2}", combined_text)
+            creation_date = year_match.group(0) if year_match else None
+
+        # Document type heuristic
+        doc_type = "paper"
+        if any("chapter" in (p["text"] or "").lower() for p in text_content[:3]):
+            doc_type = "book"
+        elif "abstract" in combined_text.lower():
+            doc_type = "paper"
+
+        base_metadata = {
+            "file_hash": file_hash,
+            "page_count": page_count,
+            "process_date": process_date,
+            "title": title,
+            "year": creation_date,
+            "doc_type": doc_type
+        }
+        
+        return base_metadata
+
     
     def smart_chunk_text(self, text_content: List[Dict], metadata: DocumentMetadata) -> List[Chunk]:
         """Orchestrate the chunking process"""
