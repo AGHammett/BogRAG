@@ -1,6 +1,6 @@
 # base_processor.py - Framework
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import os
 import re
 from pathlib import Path
@@ -32,18 +32,8 @@ class BaseAcademicProcessor:
     # ===== ABSTRACT METHODS (must be implemented by subclasses) =====
     
     @abstractmethod
-    def get_embedding_model(self) -> (AutoTokenizer, AutoModel):
+    def get_embedding_model(self) -> Tuple[AutoTokenizer, AutoModel]:
         """Return domain-specific embedding model"""
-        pass
-    
-    @abstractmethod
-    def identify_domain_sections(self, text: str) -> List[Section]:
-        """Identify domain-specific document sections"""
-        pass
-    
-    @abstractmethod
-    def classify_chunk_type(self, content: str) -> str:
-        """Classify content type (theorem/definition/paragraph for math, etc.)"""
         pass
     
     # ===== CONCRETE METHODS (shared across all domains) =====
@@ -162,19 +152,35 @@ class BaseAcademicProcessor:
         """Orchestrate the chunking process"""
         chunks = []
         for page in text_content:
-            # 1. Call abstract method: identify_domain_sections()
-            sections = self.identify_domain_sections(page.content)
+            # 1. Call abstract method: identify_sections()
+            sections = self.identify_sections(page.content)
             
             for section in sections:
                 # 2. Universal sentence-level chunking
                 section_chunks = self.chunk_section_by_sentences(section)
-                
-                # 3. Call abstract method: classify_chunk_type() for each chunk
-                for chunk in section_chunks:
-                    chunk.type = self.classify_chunk_type(chunk.content)
-                    chunks.append(chunk)
         
         return chunks
+    
+    def identify_sections(self, text: str) -> List[str]:
+        """
+        Identify domain-specific document sections
+        Uses regex patterns - If issue simplify to paragraph breaks!
+        """
+
+        section_patterns = [
+        r'^\d+\.\d+\.?\s+[A-Z]',  # 1.1 Introduction, 2.3.1 Methods
+        r'^Chapter \d+',           # Chapter headings
+        r'^Section \d+',           # Section headings  
+        r'^#{1,3}\s+',            # Markdown headers (if present)
+        r'^[A-Z][^.!?]*:$',       # "Introduction:", "Proof:", etc.
+        r'\n\n[A-Z]',             # Paragraph breaks with capital letter
+        ]
+
+        regex = "|".join(section_patterns)
+        pattern = re.compile(regex, re.MULTILINE) # compile sections with multiline
+        sections = pattern.split(text)
+        return sections
+    
     
     def chunk_section_by_sentences(self, section: Dict) -> List[Dict]:
         """Universal sentence-based chunking (same across domains)"""

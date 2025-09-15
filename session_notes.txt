@@ -1,3 +1,6 @@
 15.09.25
 
 Started work on economcis processor -> decision to use FinBERT and the transformers module
+Removed the domain metadata parts of base class & subclass
+Changed indetify_domain_sections to one identify sections method using a regex splitting
+Removed classify_chunk_type - seems redundant!
