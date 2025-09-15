@@ -12,6 +12,9 @@ import fitz
 import hashlib
 from datetime import datetime
 from pix2text import Pix2Text
+import numpy as np
+from transformers import AutoTokenizer, AutoModel
+import torch
 
 class BaseAcademicProcessor:
     """
@@ -23,18 +26,14 @@ class BaseAcademicProcessor:
         self.domain_name = domain_name
         self.base_path = setup_paths(base_path)
         self.vector_db = setup_vector_database(domain_name)
-        self.embedding_model = self.get_embedding_model()  # Abstract method
+        self.embedding_model = self.get_embedding_model()  # Abstract method - expected in form (tokeniser, model)
+        self.chunk_config = None
     
     # ===== ABSTRACT METHODS (must be implemented by subclasses) =====
     
     @abstractmethod
-    def get_embedding_model(self) -> EmbeddingModel:
+    def get_embedding_model(self) -> (AutoTokenizer, AutoModel):
         """Return domain-specific embedding model"""
-        pass
-    
-    @abstractmethod
-    def extract_domain_metadata(self, text_content: List[Dict]) -> DomainMetadata:
-        """Extract domain-specific metadata (authors, citations, etc.)"""
         pass
     
     @abstractmethod
@@ -49,7 +48,7 @@ class BaseAcademicProcessor:
     
     # ===== CONCRETE METHODS (shared across all domains) =====
     
-    def extract_text_from_pdf(self, file_path: str) -> list[dict]:
+    def extract_text_from_pdf(self, file_path: str) -> List[Dict]:
         """Universal PDF text extraction with academic optimizations"""
         
         p2t = Pix2Text() #Initialise OCR for image processing
@@ -159,7 +158,7 @@ class BaseAcademicProcessor:
         return base_metadata
 
     
-    def smart_chunk_text(self, text_content: List[Dict], metadata: DocumentMetadata) -> List[Chunk]:
+    def smart_chunk_text(self, text_content: List[Dict], metadata: Dict) -> List[Chunk]:
         """Orchestrate the chunking process"""
         chunks = []
         for page in text_content:
@@ -177,17 +176,58 @@ class BaseAcademicProcessor:
         
         return chunks
     
-    def chunk_section_by_sentences(self, section: Section) -> List[Chunk]:
+    def chunk_section_by_sentences(self, section: Dict) -> List[Dict]:
         """Universal sentence-based chunking (same across domains)"""
-        # Split into sentences
-        # Group into ~400 word chunks
-        # Preserve sentence boundaries
-        # Return list of chunks with section context
+        #Assume section comes like {"content", "title", "type", "page"} Might change later
+        
+        chunks = []
+        
+        # Use regex to split sentences and clean 
+        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])' 
+        sentences = re.split(sentence_pattern, section["content"])
+        sentences = [s.strip() for s in sentences if s.strip()] 
+
+        if not sentences: # Error handling
+            return []
+        
+        current_chunk_text = ""
+        current_word_count = 0
+
+        for i, sentence in enumerate(sentences):
+            sentence_words = len(sentence.split())
+
+            if current_word_count + sentence_words > self.chunk_config["max_words"] and current_chunk_text:
+                toggle_new_chunk = 1
+
+            if toggle_new_chunk:
+                chunk = {
+                    "content": current_chunk_text.strip(),
+                    "metadata": {
+                        "section_title": section["title"],
+                        "section_type": section["type"],
+                        "page": section["page"],
+                        "word_count": current_word_count,
+                        "chunk_index": len(chunks),
+                        "source_sentences": f"{i-len(current_chunk_text.split('. '))}:{i}"}
+                }
+                chunks.append(chunk)
     
-    def generate_embeddings(self, chunks: List[Chunk]) -> List[Vector]:
+    def generate_embeddings(self, chunks: List[Chunk], batch_size = 8) -> List[Vector]:
         """Generate embeddings using domain-specific model"""
         texts = [chunk.content for chunk in chunks]
-        return self.embedding_model.encode(texts)
+        tokenizer, model = self.embedding_model # Unpack tokeniser and model from tuple
+        embeddings = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            inputs = tokenizer(batch,return_tensors="pt", padding=True, truncation=True, max_length=512) # tokenise batch returnings as torch tensors
+
+            with torch.no_grad():
+                outputs = model(**inputs)
+            
+            batch_embeddings = outputs.last_hidden_state.mean(dim = 1).cpu().numpy() # convert shape of last hidden state to [batch_size, hidden_dim] before storing
+            embeddings.append(batch_embeddings)
+        return np.vstack(embeddings)
     
     def store_chunks(self, chunks: List[Chunk], embeddings: List[Vector]):
         """Store chunks in vector database"""
@@ -206,14 +246,8 @@ class BaseAcademicProcessor:
             # 2. Universal: Extract base metadata
             base_metadata = self.extract_base_metadata(extracted_text, file_path)
             
-            # 3. Domain-specific: Extract specialized metadata
-            domain_metadata = self.extract_domain_metadata(extracted_text)
-            
-            # 4. Combine metadata
-            full_metadata = combine_metadata(base_metadata, domain_metadata)
-            
             # 5. Universal + Domain-specific: Smart chunking
-            chunks = self.smart_chunk_text(extracted_text, full_metadata)
+            chunks = self.smart_chunk_text(extracted_text, base_metadata)
             
             # 6. Domain-specific: Generate embeddings
             embeddings = self.generate_embeddings(chunks)
