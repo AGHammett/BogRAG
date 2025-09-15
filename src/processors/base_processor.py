@@ -1,6 +1,7 @@
 # base_processor.py - Framework
 from abc import ABC, abstractmethod
-from typing import List, Dict, Tuple
+from typing import List, Dict
+from dataclasses import dataclass
 import os
 import re
 from pathlib import Path
@@ -13,8 +14,14 @@ import hashlib
 from datetime import datetime
 from pix2text import Pix2Text
 import numpy as np
-from transformers import AutoTokenizer, AutoModel
-import torch
+
+
+@dataclass
+class Chunk:
+    """Dataclass for individual chunk of text"""
+    content: str
+    metadata: dict
+
 
 class BaseAcademicProcessor:
     """
@@ -29,14 +36,19 @@ class BaseAcademicProcessor:
         self.embedding_model = self.get_embedding_model()  # Abstract method - expected in form (tokeniser, model)
         self.chunk_config = None
     
-    # ===== ABSTRACT METHODS (must be implemented by subclasses) =====
+    # ===== ABSTRACT METHODS =====
     
     @abstractmethod
-    def get_embedding_model(self) -> Tuple[AutoTokenizer, AutoModel]:
+    def get_embedding_model(self): # Will return the model in the most convenient way to the subclass
         """Return domain-specific embedding model"""
         pass
+
+    @abstractmethod
+    def generate_embeddings(self, chunks: List[Chunk]) -> np.ndarray:
+        """Return embeddings based on domain specific model"""
+        pass
     
-    # ===== CONCRETE METHODS (shared across all domains) =====
+    # ===== CONCRETE METHODS =====
     
     def extract_text_from_pdf(self, file_path: str) -> List[Dict]:
         """Universal PDF text extraction with academic optimizations"""
@@ -158,6 +170,7 @@ class BaseAcademicProcessor:
             for section in sections:
                 # 2. Universal sentence-level chunking
                 section_chunks = self.chunk_section_by_sentences(section)
+                chunks.append(section_chunks)
         
         return chunks
     
@@ -182,7 +195,7 @@ class BaseAcademicProcessor:
         return sections
     
     
-    def chunk_section_by_sentences(self, section: Dict) -> List[Dict]:
+    def chunk_section_by_sentences(self, section: Dict) -> List[Chunk]:
         """Universal sentence-based chunking (same across domains)"""
         #Assume section comes like {"content", "title", "type", "page"} Might change later
         
@@ -206,34 +219,17 @@ class BaseAcademicProcessor:
                 toggle_new_chunk = 1
 
             if toggle_new_chunk:
-                chunk = {
-                    "content": current_chunk_text.strip(),
-                    "metadata": {
+                chunk = Chunk(
+                    content =  current_chunk_text.strip(),
+                    metadata = {
                         "section_title": section["title"],
                         "section_type": section["type"],
                         "page": section["page"],
                         "word_count": current_word_count,
                         "chunk_index": len(chunks),
                         "source_sentences": f"{i-len(current_chunk_text.split('. '))}:{i}"}
-                }
-                chunks.append(chunk)
-    
-    def generate_embeddings(self, chunks: List[Chunk], batch_size = 8) -> List[Vector]:
-        """Generate embeddings using domain-specific model"""
-        texts = [chunk.content for chunk in chunks]
-        tokenizer, model = self.embedding_model # Unpack tokeniser and model from tuple
-        embeddings = []
-
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            inputs = tokenizer(batch,return_tensors="pt", padding=True, truncation=True, max_length=512) # tokenise batch returnings as torch tensors
-
-            with torch.no_grad():
-                outputs = model(**inputs)
-            
-            batch_embeddings = outputs.last_hidden_state.mean(dim = 1).cpu().numpy() # convert shape of last hidden state to [batch_size, hidden_dim] before storing
-            embeddings.append(batch_embeddings)
-        return np.vstack(embeddings)
+                )
+                chunks.append(chunk) 
     
     def store_chunks(self, chunks: List[Chunk], embeddings: List[Vector]):
         """Store chunks in vector database"""
@@ -291,6 +287,7 @@ class BaseAcademicProcessor:
             overlap_sentences=1
         )
     
+
 def setup_paths(base_path: str) -> Path:
     """Helper to create RAG directory structure"""
     base = Path(base_path).expanduser()
