@@ -169,8 +169,8 @@ class BaseAcademicProcessor:
             
             for section in sections:
                 # 2. Universal sentence-level chunking
-                section_chunks = self.chunk_section_by_sentences(section)
-                chunks.append(section_chunks)
+                section_chunks = self.chunk_section_by_sentences(section) # returns list of chunks
+                chunks.extend(section_chunks) # flatten list for one list of chunks
         
         return chunks
     
@@ -211,14 +211,12 @@ class BaseAcademicProcessor:
         
         current_chunk_text = ""
         current_word_count = 0
+        chunk_start_sentence = 0
 
         for i, sentence in enumerate(sentences):
-            sentence_words = len(sentence.split())
+            num_sentence_words = len(sentence.split())
 
-            if current_word_count + sentence_words > self.chunk_config["max_words"] and current_chunk_text:
-                toggle_new_chunk = 1
-
-            if toggle_new_chunk:
+            if current_word_count + num_sentence_words > self.chunk_config["max_words"] and current_chunk_text:
                 chunk = Chunk(
                     content =  current_chunk_text.strip(),
                     metadata = {
@@ -227,15 +225,44 @@ class BaseAcademicProcessor:
                         "page": section["page"],
                         "word_count": current_word_count,
                         "chunk_index": len(chunks),
-                        "source_sentences": f"{i-len(current_chunk_text.split('. '))}:{i}"}
+                        "source_sentences": f"{chunk_start_sentence}:{i-1}"}
                 )
-                chunks.append(chunk) 
+                chunks.append(chunk)
+
+                current_chunk_text = ""
+                current_word_count = 0
+                chunk_start_sentence = i
+
+            if current_chunk_text:
+                current_chunk_text += " " + sentence
+            else:
+                current_chunk_text = sentence
+                current_word_count += num_sentence_words
+        
+        
+        if current_chunk_text:
+            chunk = Chunk(
+                content=current_chunk_text.strip(),
+                metadata={
+                    "section_title": section["title"],
+                    "section_type": section["type"],
+                    "page": section["page"],
+                    "word_count": current_word_count,
+                    "chunk_index": len(chunks),
+                    "source_sentences": f"{chunk_start_sentence}:{len(sentences)-1}"
+                }
+            )
+            chunks.append(chunk)
+
+        return chunks
     
-    def store_chunks(self, chunks: List[Chunk], embeddings: List[Vector]):
+    def store_chunks(self, chunks: List[Chunk], embeddings: np.ndarray):
         """Store chunks in vector database"""
         # Prepare metadata for ChromaDB
         # Add to domain-specific collection
         # Log storage results
+
+
     
     # ===== MAIN WORKFLOW METHODS =====
     

@@ -15,10 +15,10 @@ class EconomicsProcessor(BaseAcademicProcessor):
         
         tokeniser = AutoTokenizer.from_pretrained("ProsusAI/finbert")
         model = AutoModel.from_pretrained("ProsusAI/finbert")
-        
+
         return (tokeniser, model)
     
-    def generate_embeddings(self, chunks: List[Chunk], batch_size = 8) -> List[Vector]:
+    def generate_embeddings(self, chunks: List[Chunk], batch_size = 8) -> np.ndarray:
         """Generate embeddings using domain-specific model"""
         texts = [chunk["content"] for chunk in chunks]
         tokenizer, model = self.embedding_model # Unpack tokeniser and model from tuple
@@ -26,7 +26,7 @@ class EconomicsProcessor(BaseAcademicProcessor):
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            inputs = tokenizer(batch,return_tensors="pt", padding=True, truncation=True, max_length=512) # tokenise batch returnings as torch tensors
+            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=512) # tokenise batch returnings as torch tensors
 
             with torch.no_grad():
                 outputs = model(**inputs)
